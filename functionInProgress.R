@@ -8,6 +8,7 @@ library(prodlim)
 library(data.table)
 
 
+
 brierScoreKMCens <- function(predSurvs, times, newData) {
   # inverse probability censoring weights
   # Note that we take probabilities right before the drops.
@@ -29,22 +30,65 @@ brierScoreKMCens <- function(predSurvs, times, newData) {
     y <- drop(t(newData$time > times[i]))
     # above permits the two parts of right-censored brier score to be calculated, without IPCW, in one line
     Score[i, ] <- (y - predSurvs[i, ])^2
-
+    
     # Generate IPCWMatrix
     IPCWMatrix[i, y == 0] <- IPCW.subject.times[y == 0] # G(t-|X) filled in corresponding positions
+    #DIFFERENCES START HERE
     IPCW.time <- predict(fitCens, newdata = newData, times = times[i], level.chaos = 1, mode = "matrix", type = "surv", lag = 1)
+    #DIFFERENCES END HERE
     IPCWMatrix[i, y == 1] <- IPCW.time # G(t) filled, same value, for remaining positions.
     # above calculated individuals who don't have an effect on brier score at specfied time. they're scores are set to 0.
     Score[i, CensBefore] <- 0
   }
-
+  
   # apply IPCW to all scores
   Err <- Score / IPCWMatrix
-
+  
   # Average curve demonstrating right-censored brier averaged over test-set, for each time of interest.
   Err <- apply(Err, 1, mean)
   return(Err)
 }
+
+brierScoreNull <- function(predSurvs, times, newData) {
+  # inverse probability censoring weights
+  # Note that we take probabilities right before the drops.
+  
+  #DIFFERENCES START HERE
+  fitCens <- prodlim::prodlim(Hist(time, event != 0) ~ 1, newData, reverse = TRUE)
+  IPCW.subject.times <- prodlim::predictSurvIndividual(fitCens, lag = 1) # G(t-|X)
+  #DIFFERENCES END HERE
+  
+  # Empty matrix that will be filled in with the following loop
+  Score <- matrix(NA, nrow(predSurvs), ncol(predSurvs))
+  IPCWMatrix <- matrix(NA, nrow(predSurvs), ncol(predSurvs))
+  # for each point in time we have predicted
+  for (i in 1:length(times)) {
+    # get number of censored individuals so long as their survival time is less than times[i]
+    # these individuals do not have an effect on right-censored brier score.
+    CensBefore <- newData$event == 0 & newData$time < times[i]
+    # y encompasses all survival times larger than t[i] with a 1, 0 otherwise
+    y <- drop(t(newData$time > times[i]))
+    # above permits the two parts of right-censored brier score to be calculated, without IPCW, in one line
+    Score[i, ] <- (y - predSurvs[i, ])^2
+    
+    # Generate IPCWMatrix
+    IPCWMatrix[i, y == 0] <- IPCW.subject.times[y == 0] # G(t-|X) filled in corresponding positions
+    #DIFFERENCES START HERE
+    IPCW.time <- predict(fitCens, newdata = newData, times = times[i], level.chaos = 1, mode = "matrix", type = "surv", lag = 1)
+    #DIFFERENCES END HERE
+    IPCWMatrix[i, y == 1] <- IPCW.time # G(t) filled, same value, for remaining positions.
+    # above calculated individuals who don't have an effect on brier score at specfied time. they're scores are set to 0.
+    Score[i, CensBefore] <- 0
+  }
+  
+  # apply IPCW to all scores
+  Err <- Score / IPCWMatrix
+  
+  # Average curve demonstrating right-censored brier averaged over test-set, for each time of interest.
+  Err <- apply(Err, 1, mean)
+  return(Err)
+}
+
 
 brierScoreweibCens <- function(predSurvs= absRiskcb, times=times, newDataX=newDataX,newDataY=newDataY) {
   # inverse probability censoring weights
@@ -73,7 +117,9 @@ brierScoreweibCens <- function(predSurvs= absRiskcb, times=times, newDataX=newDa
     
     # Generate IPCWMatrix
     IPCWMatrix[i, y == 0] <- IPCW.subject.times[y == 0] # G(t-|X) filled in corresponding positions
+    #DIFFERENCES START HERE
     IPCW.time <- IPCW.subject.times[i]
+    #DIFFERENCES END HERE
     IPCWMatrix[i, y == 1] <- IPCW.time # G(t) filled, same value, for remaining positions.
     # above calculated individuals who don't have an effect on brier score at specfied time. they're scores are set to 0.
     Score[i, CensBefore] <- 0
@@ -81,7 +127,6 @@ brierScoreweibCens <- function(predSurvs= absRiskcb, times=times, newDataX=newDa
   
   # apply IPCW to all scores
   Err <- Score / IPCWMatrix
-  
   # Average curve demonstrating right-censored brier averaged over test-set, for each time of interest.
   Err <- apply(Err, 1, mean)
   return(Err)
@@ -114,10 +159,12 @@ coxPred <- summary(survfit(coxfit, newdata = newData), times = times)$surv
 X2 <- Score(list("PredictionModel" = coxfit), data = newData, formula = Surv(time, event != 0) ~ 1, summary = "ipa", se.fit = 0L, metrics = "brier", contrasts = FALSE, times = times)
 
 
-#Fit Weibull casebase model
-cbModel <- fitSmoothHazard.fit(astrainX, astrainY, family = "glmnet", time = "time", event = "event", alpha = 0,formula_time = ~log(time), ratio = 100, standardize = TRUE)
+astrain$event=as.numeric(astrain$event)
+cbModel <- fitSmoothHazard(event==1 ~log(time) + ., data = astrain, ratio = 100,time="time",event="event")
+#Fit Weibull casebase model (ridge)
+#cbModel <- fitSmoothHazard.fit(astrainX, astrainY, family = "glmnet", time = "time", event = "event", alpha = 0,formula_time = ~log(time), ratio = 100, standardize = TRUE)
 #we require a specific format for the probabilities
-absRiskcb <- absoluteRisk(object = cbModel, newdata = newDataX, time = times, s = "lambda.1se")
+absRiskcb <- absoluteRisk(object = cbModel, newdata = newData, time = times)
 absRiskcb[, -c(1)] <- 1 - absRiskcb[, -c(1)] # make it survival probabilities
 absRiskcb <- absRiskcb[-c(1), -c(1)] # remove extra time at 0. Also remove the first column (times) as it matches perfectly now
 
@@ -141,4 +188,34 @@ ggplot(data = resultsCB, mapping = aes(x = times, y = brierScore, col = model)) 
   ggtitle("KMcensoring vs. WeibullCensoring")
 
 
+plot(times, rowMeans(coxPred), type = "l", col = "red", ylab = "survival")
+lines(times, rowMeans(absRiskcb))
+legend(x = "topright", legend = c("cox", "cbWeibull"), col = c("red", "black"))
+title("RED IS COX")
 
+
+
+
+
+expModelNull <- fitSmoothHazard(event==1 ~log(time), data = astrain, ratio = 100,time="time",event="event")
+#Fit Weibull casebase model (ridge)
+#cbModel <- fitSmoothHazard.fit(astrainX, astrainY, family = "glmnet", time = "time", event = "event", alpha = 0,formula_time = ~log(time), ratio = 100, standardize = TRUE)
+#we require a specific format for the probabilities
+absRiskExpNull <- absoluteRisk(object = expModelNull, newdata = newData, time = times)
+absRiskExpNull[, -c(1)] <- 1 - absRiskExpNull[, -c(1)] # make it survival probabilities
+absRiskExpNull <- absRiskExpNull[-c(1), -c(1)] # remove extra time at 0. Also remove the first column (times) as it matches perfectly now
+
+
+nullBrier <- brierScoreNull(predSurvs = absRiskExpNull, times = times, newData = newData)
+
+
+IPACB<-1- kmCensoredBrierScores/nullBrier
+resultsCB<-rbind(rbind(data.frame(IPA=IPACB,times=times,model="KMCBIPA")),data.frame(IPA = X2$Brier$score$IPA[X2$Brier$score$model == "PredictionModel"],times=times,model="riskRegressionCOX"))
+
+#brierScorePlot
+ggplot(data = resultsCB, mapping = aes(x = times, y = IPA, col = model)) +
+  geom_line() +
+  geom_rug(sides = "b") +
+  xlab("Times") +
+  ylab("Brier-Score")+
+  ggtitle("IPA-score: CB vs. riskRegression")
